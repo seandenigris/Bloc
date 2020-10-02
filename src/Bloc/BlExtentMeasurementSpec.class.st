@@ -14,10 +14,17 @@ Class {
 }
 
 { #category : #'instance creation' }
+BlExtentMeasurementSpec class >> atMost: anExtent [
+	^ self new
+		widthSpec: (BlMeasurementSpec atMost: anExtent x asFloat);
+		heightSpec: (BlMeasurementSpec atMost: anExtent y asFloat)
+]
+
+{ #category : #'instance creation' }
 BlExtentMeasurementSpec class >> exact: anExtent [
 	^ self new
-		widthSpec: (BlMeasurementSpec exact: anExtent x);
-		heightSpec: (BlMeasurementSpec exact: anExtent y)
+		widthSpec: (BlMeasurementSpec exact: anExtent x asFloat);
+		heightSpec: (BlMeasurementSpec exact: anExtent y asFloat)
 ]
 
 { #category : #'instance creation' }
@@ -74,10 +81,10 @@ BlExtentMeasurementSpec >> printOn: aStream [
 
 { #category : #geometry }
 BlExtentMeasurementSpec >> sizeFor: anExtent [
-	|width height|
+	| width height |
 	width := self widthSpec sizeFor: anExtent x.
 	height := self heightSpec sizeFor: anExtent y.
-	^ width@height
+	^ width @ height
 ]
 
 { #category : #accessing }

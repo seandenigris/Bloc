@@ -2,7 +2,7 @@
 ! Welcome to Bloc
 I am the root class of all visual elements in Bloc and can be composed out of other elements that we will refer to as ==children==. 
 !! Visual properties
-Being a root class and a core element I let users to configure a few esential visual properties such as background, border, opacity, size and a few more. In this part we will go through each of them.
+Being a root class and a core element, I let users configure a few essential visual properties such as background, border, opacity, size and a few more. Let's go through each of them.
 !!! Background
 ${class:BlBackground}$describes how an element should be filled, e.g. its background.
 ${class:BlBackgroundExamples}$ gives a detailed insight in the world of bloc backgrounds.
@@ -13,9 +13,9 @@ ${class:BlBorderExamples}$ provides more detailed information about a border.
 Opacity defines how transparent an element is. It does not influence event propagation.
 ${class:BlOpacityExamples}$ shows in details how opacity affects the element.
 !! Composition
-To be in-line with Bloc design we prefer composition over iheritance. Thus it is better to have tiny bloc elements with small and simple api and clear responsibilities that can later be composed into a more sophisticated graphical scene. In this paragraph we will learn the basic composition aspects and corresponding API.
+To be in-line with Bloc design, we prefer composition over inheritance. Thus it is better to have tiny bloc elements - each with a small and simple API and clear responsibilities - that can later be composed into a more sophisticated graphical scene. In this paragraph we will learn the basic composition aspects and corresponding API.
 
-The composition relation between parent and children is 1:N meaning that an element can have at most one parent. Therefore by design it is only possible to add an element to just one element. Trying to add an element that is already a child to some other element results in ${class:BlAlreadyAddedAsChildError}$ 
+The composition relation between parent and children is 1:N meaning that an element can have at most one parent. Therefore by design it is only possible to add an element to just one other element. Trying to add an element that is already a child to some other element results in ${class:BlAlreadyAddedAsChildError}$ 
 
 Bloc elements provide a set of methods to add and remove children.
 !!! Adding children
@@ -31,12 +31,16 @@ parent addChild: child
 
 Users may also choose to add an element as the first child, for that purpose Bloc provides ${method:BlElement>>#addChildFirst:}$.
 !!Geometry and bounds
-Every element is responsible for drawing itself. At the same time, every element has a ${class:BlGeometry}$ that defines the bounds and the clipping.
+Every element is responsible for drawing itself. At the same time, every element has a ${class:BlElementGeometry}$ that defines the bounds and the clipping. There are many types of geometry available:
+[[[
+BlElementGeometry allSubclasses
+]]]
 
 See ${class:BlGeometryVisualAndLayoutBoundsExamples}$ for concrete details.
+!!Layout
+There are many built-in ${class:BlLayout}$ strategies available, or you can create your own.
 !!Tutorial
 You can learn Bloc following a memory game tutorial: ${icebergFile:path=feenkcom/Bloc/doc/tutorial-memory-game/00-memory-game.pillar}$.
-
 "
 Class {
 	#name : #BlElement,
@@ -126,20 +130,25 @@ BlElement >> addChild: anElement at: anIndex [
 	anElement parent: self.
 
 	"actually add child"
-	self children add: anElement at: anIndex.
+	self telemetry
+		timeSync: [ 'Add child {1} to {2} at {3}' format: { anElement . self . anIndex } ]
+		during: [ self children add: anElement at: anIndex ].
 
 	"dispatch events/hooks after element has been added"
-	self dispatchChildAdded: anElement.
-
-	"mt managed children changed, request invalidation"
-	self childrenChanged.
-
+	self telemetry
+		timeSync: [ 'Dispatch child added' ]
+		during: [ self dispatchChildAdded: anElement ].
+	
 	"only requesting layout is not enough, because if size or position does not change
 	there will be no invalidated bounds and nothing will be rendered"
-	anElement invalidate.
+	self telemetry
+		timeSync: [ 'Invalidate child after adding it' ]
+		during: [ anElement invalidate ].
 	
 	"We should request layout from newly added element to mark it as dirty too"
-	anElement requestLayout
+	self telemetry
+		timeSync: [ 'Request child layout after adding it' ]
+		during: [ anElement requestLayout ].
 ]
 
 { #category : #'children add/remove' }
@@ -224,8 +233,6 @@ BlElement >> addChildren: aListOfElements [
 	self children addAll: aListOfElements.
 	"send hook after elements have been added"
 	aListOfElements do: [ :anElement | self dispatchChildAdded: anElement ].
-	"finally requesting children changed"
-	self childrenChanged.
 	"We should request layout from newly added elements to mark them as dirty too"
 	aListOfElements do: [ :anElement | anElement requestLayout ]
 ]
@@ -444,7 +451,27 @@ BlElement >> attachChild: anElement at: anIndex [
 
 { #category : #'api - space' }
 BlElement >> attachSpace [
-	spaceReference := BlAttachedSpaceReference uniqueInstance
+	spaceReference := BlAttachedSpaceReference uniqueInstance.
+	
+	"It is possible that an element requested focus while being temporarily
+	detached from the space. We have to requestFocus again, otherwise the focus
+	request will never reach the space.
+	(https://github.com/feenkcom/gtoolkit/issues/1457)"
+	self isFocused
+		ifTrue: [ self requestFocus ]
+		ifFalse: [
+			self space focusOwner == self
+				ifTrue: [ self looseFocus: self ] ].
+	
+	self taskQueue isEmpty
+		ifFalse: [ self space enqueueTasksFrom: self taskQueue ].
+
+	"It is possible that an element requested itself to repaint while
+	being temporarily detached from the space. If we do not resume
+	propagation of the repainting request, elements wanting a composition layer
+	will not be repainted (https://github.com/feenkcom/gtoolkit/issues/1459)"
+	self needsPaint
+		ifTrue: [ self markNeedsPaintFrom: self ]
 ]
 
 { #category : #'api - look' }
@@ -687,10 +714,6 @@ BlElement >> children [
 	<return: #BlChildrenCollection>
 
 	^ children
-]
-
-{ #category : #'children dispatching' }
-BlElement >> childrenChanged [
 ]
 
 { #category : #'children accessing' }
@@ -1036,7 +1059,9 @@ BlElement >> dispatchAddedToParent [
 
 	self onAddedToParent.
 	self eventDispatcher dispatchAddedToParent.
-	self dispatchAddedToSuperParent: self
+	self telemetry
+		timeSync: [ 'Dispatch added to super-parent {1}' format: { self } ]
+		during: [ self dispatchAddedToSuperParent: self ]
 ]
 
 { #category : #'children dispatching' }
@@ -1063,25 +1088,38 @@ BlElement >> dispatchAddedToSuperParent: anElement [
 	I dispatch or fire all necessary events, clean internal caches and send a corresponding hooks"
 
 	self onAddedToSuperParent: anElement.
-	self eventDispatcher dispatchAddedToSuperParent: anElement.
 
-	self childrenDo: [ :aChildElement | aChildElement dispatchAddedToSuperParent: anElement ]
+	self telemetry
+		timeSync: [ 'Notify added to super-parent {1}' format: { anElement } ]
+		during: [ self eventDispatcher dispatchAddedToSuperParent: anElement ].
+
+	self telemetry
+		timeSync: [ 'Dispatch to children added to super-parent {1}' format: { anElement } ]
+		during: [ self childrenDo: [ :aChildElement | aChildElement dispatchAddedToSuperParent: anElement ] ]
 ]
 
 { #category : #'children dispatching' }
 BlElement >> dispatchChildAdded: anElement [
 	
 	"First send hook to myself"
-	self onChildAdded: anElement.
-	"Let child dispatch necessary events and hooks"
-	anElement dispatchAddedToParent.
+	self telemetry
+		timeSync: [ 'On child added {1}' format: { anElement } ]
+		during: [ self onChildAdded: anElement ].
 
 	"If and only if I am attached to scene graph we let child know
 	that it is a part of the scene graph now"
 	self isAttachedToSceneGraph
 		ifTrue: [
-			anElement attachSpace.
-			anElement dispatchAddedToSceneGraph ]
+			self telemetry
+				timeSync: [ 'Dispatch added to scene graph {1}' format: { anElement } ]
+				during: [
+					anElement attachSpace.
+					anElement dispatchAddedToSceneGraph ] ].
+
+	"Let child dispatch necessary events and hooks"
+	self telemetry
+		timeSync: [ 'Dispatch added to parent {1}' format: { anElement } ]
+		during: [ anElement dispatchAddedToParent ].
 ]
 
 { #category : #'children dispatching' }
@@ -1671,7 +1709,7 @@ BlElement >> initialize [
 	constraints := BlLayoutCommonConstraints new.
 	self resetChildrenArray.
 
-	transformation := self defaultTransformation owner: self.
+	transformation := self defaultTransformation asCachedTransformation.
 
 	layout := self defaultLayout.
 
@@ -2216,10 +2254,14 @@ BlElement >> maxWidth: aNumber [
 
 { #category : #layout }
 BlElement >> measure: anExtentMeasurementSpec [
+	<return: #Point>
+
 	self errorHandler
 		with: self
 		do: [ self measureSafely: anExtentMeasurementSpec ]
-		failed: [ self measureThatFailed: anExtentMeasurementSpec ]
+		failed: [ self measureThatFailed: anExtentMeasurementSpec ].
+
+	^ self measuredExtent
 ]
 
 { #category : #'private - layout' }
@@ -2478,10 +2520,6 @@ BlElement >> onAddedToSceneGraph [
 		assert: [ self isAttachedToSceneGraph ]
 		description: [ 'I must already be attached to the scene graph' ].
 
-	self isFocused
-		ifTrue: [ self requestFocus ].
-
-	self space enqueueTasksFrom: self taskQueue.
 	self eventDispatcher dispatchAddedToSceneGraph
 ]
 
@@ -2517,7 +2555,7 @@ BlElement >> onExtentChanged [
 	"clear path cache after updating geometry path"
 	self geometry releaseCache.
 	
-	self transformation invalidateMatrix.
+	self updateTransformationBounds.
 
 	self invalidate.
 	self notifyExtentChanged
@@ -2886,6 +2924,7 @@ BlElement >> relocate: aPoint [
 	self measuredBounds position = aPoint
 		ifTrue: [ ^ self ].
 
+	self constraints position: aPoint.
 	self measuredBounds position: aPoint.
 	self requestParentLayout
 ]
@@ -2902,9 +2941,6 @@ BlElement >> removeChild: anElement [
 	anElement parent: nil.
 	self children remove: anElement.
 	self dispatchChildRemoved: anElement.
-	
-	"child removed"
-	self childrenChanged.
 	
 	"First of all, we have to damage area occupied by removed element"
 	self invalidate.
@@ -2938,7 +2974,6 @@ BlElement >> removeChildAt: anIndex [
 
 	self children removeAt: anIndex.
 	self dispatchChildRemoved: anElement.
-	self childrenChanged.
 	
 	"First of all, we have to damage area occupied by removed element"
 	self invalidate.
@@ -2972,8 +3007,6 @@ BlElement >> removeChildren [
 	self resetChildrenArray.
 	"send hook after elements has been removes"
 	oldChildren do: [ :anElement | self dispatchChildRemoved: anElement ].
-	"finally requesting children changed"
-	self childrenChanged.
 	
 	"First of all, we have to damage area occupied by removed element"
 	self invalidate.
@@ -2998,8 +3031,6 @@ BlElement >> removeChildren: aListOfElements [
 		anElement parent: nil ].
 	self children removeAll: aListOfElements.
 	aListOfElements do: [ :anElement | self dispatchChildRemoved: anElement ].
-
-	self childrenChanged.
 	
 	"First of all, we have to damage area occupied by removed element"
 	self invalidate.
@@ -3282,15 +3313,6 @@ BlElement >> scaleY: factor [
 		apply
 ]
 
-{ #category : #'api - layout' }
-BlElement >> setMatchParentConstraints [
-	"Convenience method to set matchParent constraints vertically and horizontally"
-
-	self constraintsDo: [ :c |
-			c horizontal matchParent.
-			c vertical matchParent ].
-]
-
 { #category : #'event handling' }
 BlElement >> shouldChildrenHandleMouseEvents [
 	"Return true if my children are allowed to handle mouse events.
@@ -3442,7 +3464,12 @@ BlElement >> transformation [
 
 { #category : #transformations }
 BlElement >> transformation: anElementTransformation [
-	transformation := anElementTransformation owner: self.
+	transformation := anElementTransformation asCachedTransformation
+		bounds: self bounds inLocal asRectangle.
+
+	self constraints shouldAccountTransformation
+		ifTrue: [ self requestParentLayout ].
+
 	self boundsCache invalidateBoundsInSpace.
 	self invalidate.
 
@@ -3501,6 +3528,14 @@ BlElement >> updateBackground [
 { #category : #'change reporting' }
 BlElement >> updateGeometry [
 	self geometry matchElement: self
+]
+
+{ #category : #transformations }
+BlElement >> updateTransformationBounds [
+	"Update the bounds of the cached transformation in order to recompute its martix
+	since transformation origin depends on the element's bounds"
+
+	transformation bounds: self bounds inLocal asRectangle
 ]
 
 { #category : #accessing }

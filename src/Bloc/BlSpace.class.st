@@ -1,9 +1,13 @@
 "
-I am the logical representation of a window in Bloc regardless the current Host in use.
-
+I am the logical representation of a window in Bloc regardless of the current Host in use.
+Here are some of the important objects I use and talk to:
+- ${class:BlCursor}$
+- ${class:BlTime}$
+- Various ${class:BlBaseEventProcessor}$ subclasses broker different${class:BlEvent}$types
+- ${class:BlSpaceFrame}$
 !! Gracefully closing the image when a space is closed
 
-A common use-case is to shutdown Pharo when some particular space is closed. To do so we provide ${class:BlSpaceShutdownOnCloseListener}$ which can be added to any space as an event handler. It listens to ${class:BlSpaceClosedEvent}$ which is sent after a space is closed. See the listener class for configuration options.
+A common use case is to quit the application when some particular space is closed. To do this, we provide ${class:BlSpaceShutdownOnCloseListener}$ which can be added to any space as an event handler. It listens for a ${class:BlSpaceClosedEvent}$, which is sent after a space is closed. See the listener class for configuration options.
 "
 Class {
 	#name : #BlSpace,
@@ -127,6 +131,26 @@ BlSpace class >> simulateClickOutside: anElement [
 ]
 
 { #category : #'debug - simulation' }
+BlSpace class >> simulateDoubleClickOn: anElement [
+	"Simulate a double click event in the middle of a given element by
+	performing mouse down and mouse up events in a sequence"
+	| aPosition |
+	
+	"we never know if an element was already layered out"
+	anElement topMostParent forceLayout.
+	aPosition := anElement bounds inSpace center.
+	
+	"we simulate a double click with a sequence of low level mouse down/up events"
+	self
+		simulateEvents: {
+			BlMouseDownEvent primary position: aPosition.
+			BlMouseUpEvent primary position: aPosition.
+			BlMouseDownEvent primary position: aPosition.
+			BlMouseUpEvent primary position: aPosition. }
+		on: anElement
+]
+
+{ #category : #'debug - simulation' }
 BlSpace class >> simulateDragOn: anElement by: aBlVector [
 	"Simulate a click event in the middle of a given element by
 	performing mouse down and mouse up events in a sequence"
@@ -153,9 +177,9 @@ BlSpace class >> simulateEvent: anEvent on: anElement [
 	If you would like to simulate a higher level event you could directly fire or dispatch them
 	by asking any element to #fireEvent: or #dispatchEvent:
 	Note: UI mouse events require to set #position: given in space coordinates or in root most parent
-	coordiantes of the provided element.
+	coordinates of the provided element.
 	Note: I create a temporary space if provided element does not have one. if you need to simulate
-	of sequence of dependent events it is better to use #simulateEvents:on: directy"
+	a sequence of dependent events it is better to use #simulateEvents:on: directy"
 
 	self simulateEvents: { anEvent } on: anElement
 ]
@@ -166,7 +190,7 @@ BlSpace class >> simulateEvents: aCollectionOfEvents on: anElement [
 	If you would like to simulate a higher level event you could directly fire or dispatch them
 	by asking any element to #fireEvent: or #dispatchEvent:
 	Note: UI mouse events require to set #position: given in space coordinates or in root most parent
-	coordiantes of the provided element"
+	coordinates of the provided element"
 	
 	"we should update timestamps"
 	aCollectionOfEvents do: [ :anEvent | anEvent timestamp: DateAndTime now ].
@@ -727,7 +751,7 @@ BlSpace >> hasLayoutError [
 
 { #category : #testing }
 BlSpace >> hasOwner [
-	"To be polymorhic with BlElement's traversal API.
+	"To be polymorphic with BlElement's traversal API.
 	Space does not have an owner"
 	<return: #Boolean>
 	
@@ -834,7 +858,7 @@ BlSpace >> initialize [
 	touchProcessor := BlTouchProcessor space: self.
 	gestureProcessor := BlGestureProcessor space: self.
 
-	tasks := BlTaskQueue new.
+	tasks := BlSpaceTaskQueue space: self.
 	time := BlTime real.
 	frame := BlSpaceFrame new.
 	telemetry := BlNullTelemetry uniqueInstance.
@@ -842,7 +866,6 @@ BlSpace >> initialize [
 	root := self defaultRoot.
 
 	self extent: self defaultExtent.
-	self position: 0@0.
 
 	self resizable: true.
 	self borderless: false.
@@ -911,6 +934,16 @@ BlSpace >> keyboardProcessor [
 { #category : #'accessing - processors' }
 BlSpace >> keyboardProcessor: aKeyboardProcessor [
 	keyboardProcessor := aKeyboardProcessor
+]
+
+{ #category : #'window - properties' }
+BlSpace >> knowsPosition [
+	"Return true if this space knows its position.
+	By default, spaces don't know their position and allow the window manager to choose one.
+	Setting an explicit position during space creation will result in a window created at a specified position"
+	<return: #Boolean>
+
+	^ position notNil
 ]
 
 { #category : #'focus managing' }
@@ -988,12 +1021,12 @@ BlSpace >> position [
 	
 	^ self
 		hostSpaceDo: [ :aHostSpace | aHostSpace position ]
-		ifAbsent: [ position ]
+		ifAbsent: [ position ifNil: [ 0@0 ] ]
 ]
 
 { #category : #'window - properties' }
 BlSpace >> position: aPoint [
-	"Request to change window's position to a given point in screen corrdinates"
+	"Request to change window's position to a given point in screen coordinates"
 
 	self setPosition: aPoint.
 	self hostSpaceDo: [ :aHostSpace | aHostSpace position: aPoint ]
@@ -1125,7 +1158,7 @@ BlSpace >> root: anElement [
 
 { #category : #accessing }
 BlSpace >> rootDo: aBlock [
-	"A helper method to evaluate a given block with root element an argument.
+	"A helper method to evaluate a given block with the root element as its argument.
 	May be useful for scripting"
 
 	aBlock value: self root
@@ -1174,7 +1207,7 @@ BlSpace >> showSpace: aSpace [
 
 { #category : #'api - tasks' }
 BlSpace >> taskQueue [
-	<return: #BlTaskQueue>
+	<return: #BlSpaceTaskQueue>
 	
 	^ tasks
 ]
